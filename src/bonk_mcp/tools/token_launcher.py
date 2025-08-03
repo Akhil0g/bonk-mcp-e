@@ -17,7 +17,7 @@ class TokenLauncherTool:
 
     def __init__(self):
         self.name = "launch-token"
-        self.description = "Launch a new meme token on Solana using Raydium launchpad"
+        self.description = "Launch a new meme token on Solana using Raydium launchpad, with an optional initial buy."
         self.input_schema = {
             "type": "object",
             "properties": {
@@ -27,7 +27,9 @@ class TokenLauncherTool:
                 "twitter": {"type": "string", "description": "Twitter handle/URL (optional)"},
                 "telegram": {"type": "string", "description": "Telegram group URL (optional)"},
                 "website": {"type": "string", "description": "Website URL (optional)"},
-                "image_url": {"type": "string", "description": "Image URL to use for token"}
+                "image_url": {"type": "string", "description": "Image URL to use for token"},
+                "buy_amount_sol": {"type": "number", "description": "Optional: Amount of SOL to use for an initial buy of the token."},
+                "slippage": {"type": "number", "description": "Optional: Slippage percentage for the initial buy (default: 5)."}
             },
             "required": ["name", "symbol", "description", "image_url"]
         }
@@ -50,6 +52,8 @@ class TokenLauncherTool:
         telegram = arguments.get("telegram", "")
         website = arguments.get("website", "")
         image_url = arguments.get("image_url", "")
+        buy_amount_sol = arguments.get("buy_amount_sol")
+        slippage = arguments.get("slippage", 5)  # Default to 5% slippage
 
         # Validate required arguments
         if not name or not symbol or not description or not image_url:
@@ -103,7 +107,9 @@ class TokenLauncherTool:
             mint_keypair=mint_keypair,
             name=name,
             symbol=symbol,
-            uri=uri
+            uri=uri,
+            buy_amount_sol=buy_amount_sol,
+            slippage=slippage
         )
 
         # Process results
@@ -120,11 +126,24 @@ class TokenLauncherTool:
         response_text = (
             f"🚀 Successfully launched token: {name} ({symbol})\n\n"
             f"Mint Address: {mint_address}\n"
+            f"Launch TX: {launch_result.get('token_tx_signature')}\n"
             f"Pool State: {pdas['pool_state']}\n"
-            f"Token URI: {uri}\n"
-            f"Image URL: {image_url}\n\n"
+            f"Token URI: {uri}\n\n"
             f"Funded from account: {payer_keypair.pubkey()}\n"
         )
+
+        # Add buy information if it exists
+        if launch_result.get("buy_tx_signature"):
+            response_text += (
+                f"\n✅ Initial buy successful!\n"
+                f"Buy TX: {launch_result['buy_tx_signature']}\n"
+            )
+        elif launch_result.get("buy_error"):
+            response_text += (
+                f"\n⚠️ Initial buy failed!\n"
+                f"Error: {launch_result['buy_error']}\n"
+            )
+
 
         return [TextContent(
             type="text",
