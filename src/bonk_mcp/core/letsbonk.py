@@ -20,7 +20,8 @@ from bonk_mcp.utils import (
     create_or_get_token_account,
     create_temporary_wsol_account,
     get_close_wsol_instruction,
-    send_and_confirm_transaction
+    send_and_confirm_transaction,
+    calculate_tokens_receive
 )
 
 # Import settings
@@ -492,10 +493,12 @@ async def launch_token_with_buy(
     decimals: int = 6,
     supply: str = "1000000000000000",
     base_sell: str = "793100000000000",
-    quote_raising: str = "85000000000"
+    quote_raising: str = "85000000000",
+    buy_amount_sol: Optional[float] = None,
+    slippage: int = 5
 ) -> Dict:
     """
-    Launch a new token on Raydium Launchpad
+    Launch a new token on Raydium Launchpad and optionally buy it.
 
     Args:
         payer_keypair: The keypair that will pay for the transaction
@@ -506,6 +509,8 @@ async def launch_token_with_buy(
         supply: Total supply (default: 10^15 = 1 quadrillion)
         base_sell: Total tokens to sell (default: 7.931 × 10^14 = 79.31% of supply)
         quote_raising: Total SOL to raise in lamports (default: 85 SOL)
+        buy_amount_sol: Optional amount of SOL for an initial buy
+        slippage: Slippage percentage for the initial buy
 
     Returns:
         Dictionary with results of the operations
@@ -516,6 +521,8 @@ async def launch_token_with_buy(
         "token_tx_signature": None,
         "base_token_account": None,
         "pdas": {},
+        "buy_tx_signature": None,
+        "buy_error": None,
         "error": None
     }
 
@@ -556,20 +563,62 @@ async def launch_token_with_buy(
 
         # Send token creation transaction
         print("Sending token creation transaction...")
-        token_success = await send_and_confirm_transaction(create_token_txn, payer_keypair, mint_keypair)
+        token_success = await send_and_confirm_transaction(create_token_txn, payer_keypair, mint_keypair, confirm=True)
 
         if not token_success:
             print("Token creation failed.")
             results["error"] = "Token creation failed"
             return results
 
-        print("Token creation succeeded!")
+        print(f"Token creation succeeded! Transaction: {token_success}")
         results["token_created"] = True
+        results["token_tx_signature"] = str(token_success)
+
+        # Step 2: Buy the token if requested
+        if buy_amount_sol and buy_amount_sol > 0:
+            print(f"\n===== STEP 2: Buying Token ({buy_amount_sol} SOL) =====")
+            # Add a small delay to allow the network to catch up
+            await asyncio.sleep(5)
+            try:
+                # Calculate minimum tokens to receive based on slippage
+                token_info = calculate_tokens_receive(buy_amount_sol, previous_sol=0, slippage=slippage)
+                minimum_amount_out = token_info["token_amount"]
+                
+                print(f"Minimum tokens to receive: {minimum_amount_out} (with {slippage}% slippage)")
+
+                buy_txn, additional_signers = await create_buy_tx(
+                    payer_keypair=payer_keypair,
+                    mint_pubkey=mint_keypair.pubkey(),
+                    amount_in=buy_amount_sol,
+                    minimum_amount_out=minimum_amount_out
+                )
+                
+                print("Sending buy transaction...")
+                buy_tx_hash = await send_and_confirm_transaction(
+                    buy_txn,
+                    payer_keypair,
+                    *additional_signers,
+                    skip_preflight=True,
+                    confirm=True
+                )
+
+                if buy_tx_hash:
+                    print(f"Successfully bought tokens! Transaction: {buy_tx_hash}")
+                    results["buy_tx_signature"] = str(buy_tx_hash)
+                else:
+                    print("Buy transaction failed.")
+                    results["buy_error"] = "Failed to execute the initial buy."
+
+            except Exception as e:
+                error_msg = f"Error during initial buy: {traceback.format_exc()}"
+                print(error_msg)
+                results["buy_error"] = str(e)
+
 
         return results
 
     except Exception as e:
         error_msg = f"Error in launch_token_with_buy: {traceback.format_exc()}"
         print(error_msg)
-        results["error"] = error_msg
+        results["error"] = str(e)
         return results
